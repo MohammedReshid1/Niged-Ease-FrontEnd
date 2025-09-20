@@ -1,0 +1,571 @@
+'use client';
+
+import * as React from 'react';
+import { useStore } from '@/providers/store-provider';
+import { companiesApi } from '@/services/api/companies';
+import { inventoryApi } from '@/services/api/inventory';
+import { transactionsApi } from '@/services/api/transactions';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
+import Checkbox from '@mui/material/Checkbox';
+import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
+import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Grid from '@mui/material/Grid';
+import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
+import InputLabel from '@mui/material/InputLabel';
+import MenuItem from '@mui/material/MenuItem';
+import Paper from '@mui/material/Paper';
+import Select from '@mui/material/Select';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import TextField from '@mui/material/TextField';
+import Typography from '@mui/material/Typography';
+import { Trash as TrashIcon } from '@phosphor-icons/react/dist/ssr/Trash';
+import { useTranslation } from 'react-i18next';
+
+import { useCurrentUser } from '@/hooks/use-auth';
+
+// Define type interfaces
+interface ProductItem {
+  id: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+}
+
+interface PurchaseData {
+  id?: string;
+  supplier: string;
+  totalAmount: number;
+  tax: string;
+  amount_paid?: number;
+  subtotal?: number;
+  taxAmount?: number;
+  is_credit?: boolean;
+  company_id?: string;
+  store_id?: string;
+  currency_id?: string;
+  payment_mode_id?: string;
+  date?: string;
+  status?: string;
+  products?: ProductItem[];
+}
+
+interface PurchaseEditModalProps {
+  open: boolean;
+  onClose: () => void;
+  onSave: (data: PurchaseData) => void;
+  purchase?: PurchaseData;
+  isNew?: boolean;
+}
+
+// Default purchase data
+const defaultPurchase = {
+  date: new Date().toISOString().split('T')[0],
+  supplier: '',
+  status: '',
+  products: [],
+  totalAmount: 0,
+  amount_paid: 0,
+  subtotal: 0,
+  taxAmount: 0,
+  tax: '0',
+  company_id: '',
+  store_id: '',
+  currency_id: '',
+  payment_mode_id: '',
+  is_credit: false,
+};
+
+export default function PurchaseEditModal({
+  open,
+  onClose,
+  onSave,
+  purchase = defaultPurchase,
+  isNew = true,
+}: PurchaseEditModalProps) {
+  // State
+  const [formData, setFormData] = React.useState<PurchaseData>(purchase);
+  const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [suppliers, setSuppliers] = React.useState<any[]>([]);
+  const [products, setProducts] = React.useState<any[]>([]);
+  const [currencies, setCurrencies] = React.useState<any[]>([]);
+  const [paymentModes, setPaymentModes] = React.useState<any[]>([]);
+  const [selectedProduct, setSelectedProduct] = React.useState('');
+  const [currentQuantity, setCurrentQuantity] = React.useState(1);
+
+  // Hooks
+  const { t } = useTranslation('admin');
+  const { userInfo } = useCurrentUser();
+  const { currentStore } = useStore();
+
+  // Load data when modal opens
+  React.useEffect(() => {
+    if (open && currentStore) {
+      setIsLoading(true);
+
+      const fetchData = async () => {
+        try {
+          const [suppliersData, productsData, currenciesData, paymentModesData] = await Promise.all([
+            transactionsApi.getSuppliers(currentStore.id),
+            inventoryApi.getProducts(currentStore.id),
+            companiesApi.getCurrencies(),
+            transactionsApi.getPaymentModes(currentStore.id),
+          ]);
+
+          setSuppliers(suppliersData);
+          setProducts(productsData);
+          setCurrencies(currenciesData);
+          setPaymentModes(paymentModesData);
+
+          // Initialize form with defaults if needed
+          if (!formData.supplier) {
+            setFormData((prev) => ({
+              ...prev,
+              currency_id: currenciesData.length > 0 ? currenciesData[0].id : '',
+              payment_mode_id: paymentModesData.length > 0 ? paymentModesData[0].id : '',
+              store_id: currentStore.id,
+              company_id: userInfo?.company_id || '',
+            }));
+          }
+        } catch (error) {
+          console.error('Error loading data:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      fetchData();
+    }
+  }, [open, currentStore, userInfo, formData.supplier]);
+
+  // Update formData when purchase prop changes
+  React.useEffect(() => {
+    setFormData(purchase);
+  }, [purchase]);
+
+  // Handle form field changes
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type, checked } = e.target;
+    const newValue = type === 'checkbox' ? checked : value;
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: newValue,
+    }));
+
+    // Clear error
+    if (errors[name]) {
+      setErrors((prev) => ({
+        ...prev,
+        [name]: '',
+      }));
+    }
+  };
+
+  // Handle select field changes
+  const handleSelectChange = (e: any) => {
+    const { name, value } = e.target;
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+
+    // Clear error
+    if (errors[name]) {
+      setErrors((prev) => ({
+        ...prev,
+        [name]: '',
+      }));
+    }
+  };
+
+  // Calculate totals
+  const calculateTotals = (items: ProductItem[] = []) => {
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+    const taxPercentage = parseFloat(formData.tax || '0');
+    const taxAmount = (subtotal * taxPercentage) / 100;
+
+    return {
+      subtotal,
+      taxAmount,
+      totalAmount: subtotal + taxAmount,
+    };
+  };
+
+  // Add product to the order
+  const handleAddProduct = () => {
+    if (!selectedProduct) {
+      setErrors((prev) => ({ ...prev, product: 'Please select a product' }));
+      return;
+    }
+
+    const product = products.find((p) => p.id === selectedProduct);
+    if (!product) return;
+
+    const newProducts = [...(formData.products || [])];
+    const existingIndex = newProducts.findIndex((p) => p.id === selectedProduct);
+
+    if (existingIndex >= 0) {
+      // Update existing product
+      newProducts[existingIndex].quantity += currentQuantity;
+      newProducts[existingIndex].subtotal = newProducts[existingIndex].quantity * newProducts[existingIndex].unitPrice;
+    } else {
+      // Add new product
+      const price = parseFloat(product.purchase_price || '0');
+      newProducts.push({
+        id: product.id,
+        name: product.name,
+        quantity: currentQuantity,
+        unitPrice: price,
+        subtotal: currentQuantity * price,
+      });
+    }
+
+    const { subtotal, taxAmount, totalAmount } = calculateTotals(newProducts);
+
+    setFormData((prev) => ({
+      ...prev,
+      products: newProducts,
+      subtotal,
+      taxAmount,
+      totalAmount,
+    }));
+
+    setSelectedProduct('');
+    setCurrentQuantity(1);
+    setErrors((prev) => ({ ...prev, product: '' }));
+  };
+
+  // Remove product
+  const handleRemoveProduct = (id: string) => {
+    if (!formData.products) return;
+
+    const updatedProducts = formData.products.filter((p) => p.id !== id);
+    const { subtotal, taxAmount, totalAmount } = calculateTotals(updatedProducts);
+
+    setFormData((prev) => ({
+      ...prev,
+      products: updatedProducts,
+      subtotal,
+      taxAmount,
+      totalAmount,
+    }));
+  };
+
+  // Validate form
+  const validateForm = (): boolean => {
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.supplier) {
+      newErrors.supplier = 'Supplier is required';
+    }
+
+    if (!formData.products || formData.products.length === 0) {
+      newErrors.product = 'At least one product is required';
+    }
+
+    if (!formData.currency_id) {
+      newErrors.currency_id = 'Currency is required';
+    }
+
+    if (!formData.payment_mode_id) {
+      newErrors.payment_mode_id = 'Payment mode is required';
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  // Submit form
+  const handleSubmit = () => {
+    if (!validateForm()) return;
+    onSave(formData);
+  };
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <Dialog open={open} onClose={onClose}>
+        <DialogContent>
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+            <CircularProgress />
+          </Box>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>{isNew ? t('purchases.add_purchase') : t('purchases.edit_purchase')}</DialogTitle>
+      <DialogContent dividers>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {/* Basic info */}
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth error={!!errors.supplier}>
+                <InputLabel id="supplier-label">{t('purchases.purchase_supplier')}</InputLabel>
+                <Select
+                  labelId="supplier-label"
+                  name="supplier"
+                  value={formData.supplier || ''}
+                  onChange={handleSelectChange}
+                  label={t('purchases.purchase_supplier')}
+                >
+                  {suppliers.map((supplier) => (
+                    <MenuItem key={supplier.id} value={supplier.id}>
+                      {supplier.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+                {errors.supplier && (
+                  <Typography color="error" variant="caption">
+                    {errors.supplier}
+                  </Typography>
+                )}
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label={t('purchases.purchase_date')}
+                name="date"
+                type="date"
+                value={formData.date || ''}
+                onChange={handleChange}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+          </Grid>
+
+          {/* Product selection */}
+          <Card sx={{ p: 2, bgcolor: '#f9fafb' }}>
+            <Typography variant="h6" sx={{ mb: 2 }}>
+              {t('purchases.add_item')}
+            </Typography>
+
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={5}>
+                <FormControl fullWidth error={!!errors.product}>
+                  <InputLabel id="product-label">{t('products.product_name')}</InputLabel>
+                  <Select
+                    labelId="product-label"
+                    value={selectedProduct || ''}
+                    onChange={(e) => setSelectedProduct(e.target.value)}
+                    label={t('products.product_name')}
+                    displayEmpty
+                  >
+                    {products.map((product) => (
+                      <MenuItem key={product.id} value={product.id}>
+                        {product.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  {errors.product && (
+                    <Typography color="error" variant="caption">
+                      {errors.product}
+                    </Typography>
+                  )}
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <TextField
+                  fullWidth
+                  label={t('purchases.quantity')}
+                  type="number"
+                  value={currentQuantity}
+                  onChange={(e) => setCurrentQuantity(Number(e.target.value))}
+                  InputProps={{ inputProps: { min: 1 } }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Button fullWidth variant="contained" onClick={handleAddProduct} sx={{ height: '56px' }}>
+                  {t('purchases.add_item')}
+                </Button>
+              </Grid>
+            </Grid>
+
+            {/* Products table */}
+            {formData.products && formData.products.length > 0 && (
+              <TableContainer component={Paper} sx={{ mt: 2 }}>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>{t('products.product_name')}</TableCell>
+                      <TableCell align="right">{t('purchases.quantity')}</TableCell>
+                      <TableCell align="right">{t('purchases.price')}</TableCell>
+                      <TableCell align="right">{t('purchases.total')}</TableCell>
+                      <TableCell align="right">{t('common.actions')}</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {formData.products.map((product) => (
+                      <TableRow key={product.id}>
+                        <TableCell>{product.name}</TableCell>
+                        <TableCell align="right">{product.quantity}</TableCell>
+                        <TableCell align="right">${product.unitPrice.toFixed(2)}</TableCell>
+                        <TableCell align="right">${(product.quantity * product.unitPrice).toFixed(2)}</TableCell>
+                        <TableCell align="right">
+                          <IconButton size="small" onClick={() => handleRemoveProduct(product.id)}>
+                            <TrashIcon size={20} />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    <TableRow>
+                      <TableCell colSpan={3} align="right">
+                        <strong>{t('purchases.subtotal')}:</strong>
+                      </TableCell>
+                      <TableCell align="right" colSpan={2}>
+                        ${formData.subtotal ? formData.subtotal.toFixed(2) : '0.00'}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={3} align="right">
+                        <strong>
+                          {t('purchases.tax')} ({formData.tax || 0}%):
+                        </strong>
+                      </TableCell>
+                      <TableCell align="right" colSpan={2}>
+                        ${formData.taxAmount ? formData.taxAmount.toFixed(2) : '0.00'}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={3} align="right">
+                        <strong>{t('purchases.total')}:</strong>
+                      </TableCell>
+                      <TableCell align="right" colSpan={2}>
+                        ${formData.totalAmount ? formData.totalAmount.toFixed(2) : '0.00'}
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </Card>
+
+          {/* Payment details */}
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth error={!!errors.currency_id}>
+                <InputLabel id="currency-label">{t('common.currency')}</InputLabel>
+                <Select
+                  labelId="currency-label"
+                  name="currency_id"
+                  value={formData.currency_id || ''}
+                  onChange={handleSelectChange}
+                  label={t('common.currency')}
+                >
+                  {currencies.map((currency) => (
+                    <MenuItem key={currency.id} value={currency.id}>
+                      {currency.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+                {errors.currency_id && (
+                  <Typography color="error" variant="caption">
+                    {errors.currency_id}
+                  </Typography>
+                )}
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth error={!!errors.payment_mode_id}>
+                <InputLabel id="payment-mode-label">{t('purchases.payment_method')}</InputLabel>
+                <Select
+                  labelId="payment-mode-label"
+                  name="payment_mode_id"
+                  value={formData.payment_mode_id || ''}
+                  onChange={handleSelectChange}
+                  label={t('purchases.payment_method')}
+                >
+                  {paymentModes.map((mode) => (
+                    <MenuItem key={mode.id} value={mode.id}>
+                      {mode.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+                {errors.payment_mode_id && (
+                  <Typography color="error" variant="caption">
+                    {errors.payment_mode_id}
+                  </Typography>
+                )}
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label={t('purchases.tax')}
+                name="tax"
+                type="number"
+                value={formData.tax || '0'}
+                onChange={handleChange}
+                InputProps={{
+                  inputProps: { min: 0, step: 0.01 },
+                  endAdornment: <InputAdornment position="end">%</InputAdornment>,
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControlLabel
+                control={<Checkbox name="is_credit" checked={formData.is_credit || false} onChange={handleChange} />}
+                label={t('purchases.credit')}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label={t('purchases.amount_paid')}
+                type="number"
+                name="amount_paid"
+                value={formData.amount_paid || 0}
+                onChange={handleChange}
+                fullWidth
+                variant="outlined"
+                margin="normal"
+                InputProps={{
+                  startAdornment: currencies.find((c) => c.id === formData.currency_id)?.code && (
+                    <InputAdornment position="start">
+                      {currencies.find((c) => c.id === formData.currency_id)?.code}
+                    </InputAdornment>
+                  ),
+                }}
+                error={!!errors.amount_paid}
+                helperText={
+                  errors.amount_paid ||
+                  ((formData.amount_paid || 0) < (formData.totalAmount || 0)
+                    ? t('purchases.amount_paid_creates_payable')
+                    : '')
+                }
+              />
+            </Grid>
+          </Grid>
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>{t('common.cancel')}</Button>
+        <Button
+          onClick={handleSubmit}
+          variant="contained"
+          sx={{ bgcolor: '#0ea5e9', '&:hover': { bgcolor: '#0284c7' } }}
+        >
+          {t('common.save')}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
